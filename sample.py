@@ -32,6 +32,9 @@ def get_samples(
     Sample `num_samples` samples from `prog`. 
     dtype is either scalar or list.
     """
+    
+    # Load the program from which we will be sampling. If samples already exist,
+    # load the samples in as well. 
     if 'solution' in sid:
         sample_path = os.path.join(DATA_DIR, qid, 'solution', sid, 'samples.npy')
         prog_path = os.path.join(DATA_DIR, qid, 'solution', 'solution', 'response.txt')
@@ -40,7 +43,7 @@ def get_samples(
         prog_path = os.path.join(DATA_DIR, qid, 'students', sid, 'response.txt')
     with open(prog_path) as f:
         prog = f.read()
-    
+        
     if append_samples and os.path.isfile(sample_path):
         samples = list(np.load(sample_path))
     else:
@@ -51,11 +54,11 @@ def get_samples(
     elif dtype == 'list':
         sample_fn = list_sample
         
+    # Set up progress bar and error handling
     pid = os.getpid()
     pbar = tqdm(range(num_samples), leave=False, position=pos,
                 dynamic_ncols=True, nrows=20, postfix=f'{pid}')
     def sigterm_handler(_signo, _stack_frame):
-    # Raises SystemExit(0):
         pbar.close()
         return None, []
     signal.signal(signal.SIGTERM, sigterm_handler)
@@ -63,15 +66,13 @@ def get_samples(
     timeout_cnt = 0
     samples_remaining = num_samples
     
-    i = 0
-    
+    # Begin sampling
     while samples_remaining > 0:
         start = time.time()
         val = sample_fn(qid, prog, test_args=test_args)
         end = time.time()
         
-        i += 1
-        
+        # Add the newly sampled value(s) to the list of samples
         if dtype == 'scalar':
             if val is None:
                 timeout_cnt += 1
@@ -93,7 +94,8 @@ def get_samples(
         if len(samples) == early_stopping and samples.count(samples[0]) == len(samples):
             samples = [samples[0]]
             break
-            
+         
+        # Update the progress bar if the sample is valid
         if val is not None:
             if dtype == 'scalar':
                 pbar.update(1)
@@ -107,10 +109,16 @@ def get_samples(
 
 
 def scalar_sample(qid, prog, test_args=[]):
+    """
+    Execution function for scalar data types.
+    """
     return exec_program(qid, prog, test_args=test_args)
 
 
 def list_sample(qid, prog, test_args=[]):
+    """
+    Execution function for list data type.
+    """
     return exec_program(qid, prog, test_args=test_args, allowed_types=[list])
 
 
@@ -122,14 +130,20 @@ def evaluate_student_code(qid, prog, test_args, test_agent_name='__test_agent'):
     
     import sys
     import io
+    
+    # Load in the testing program 
     test_path = os.path.join(DATA_DIR, qid, 'test_agent.py')
     with open(test_path) as f:
         test_agent = f.read()
+        
+    # Redirect output to prevent extraneous printing
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     sys.stdout = io.StringIO()
     sys.stderr = io.StringIO()
+    
     try:
+        # Execute the program and record the output
         exec(prog, locals(), locals())
         exec(test_agent, locals(), locals())
         val = locals()[test_agent_name](*test_args)
@@ -175,7 +189,11 @@ def get_student_info_single(
         sid, qid, num_samples, dtype, test_label=None, test_args=[],
         pos=None, proc_queue=None, append_samples=False
 ):
+    """
+    Sampling process for singlethreaded sampling. 
+    """
     
+    # Create the appropriate directory name where samples will be stored
     dir_lst = [DATA_DIR, qid]
     dir_lst.append('solution' if 'solution' in sid else 'students')
     if 'mc' in sid:
@@ -208,7 +226,10 @@ def get_student_info_multi(
         sids, qid, num_samples, dtype, max_parallel,
         test_suites={None: []}, clear_dir=False, append_samples=False
 ):
-
+    """
+    Sampling process for multithreaded sampling.
+    """
+    
     dirname = os.path.join(SAMPLE_DIR, qid, 'students')
     if not os.path.exists(dirname):
         os.makedirs(dirname)
@@ -274,13 +295,12 @@ def get_student_info_multi(
         json.dump(error_idx, f)
         
         
-def monte_carlo(num_stud_samples, num_soln_samples, M=1000):
-    pass
-        
-        
 def sample_soln(
     qid, num_samples, dtype, test_suites={None: []}
 ):
+    """
+    Sample the solution program
+    """
     dirname = os.path.join(SAMPLE_DIR, qid)
     if not os.path.exists(dirname):
         os.makedirs(dirname)
@@ -296,6 +316,10 @@ def sample_soln(
             
     
 def get_test_suite(qid, test_suite_dir, num_tests=20, all_test_cases=False):
+    """
+    Create test suite cases for problems in which multiple sample sets
+    from the same program are useful.
+    """
     
     suite_fname = os.path.join(test_suite_dir, f'{qid}.pkl')
 
