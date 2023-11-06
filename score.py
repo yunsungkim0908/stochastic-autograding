@@ -1,4 +1,5 @@
 import inspect
+import json
 import numpy as np
 import os
 import pickle
@@ -114,7 +115,7 @@ class AndersonDarlingScorer(Scorer):
         return 'AndersonDarlingScorer'
 
     def compute_score(self, stud_samples, soln_samples):
-        score = stats.anderson_ksamp([stud_samples, soln_samples]).pvalue
+        score = 1 - stats.anderson_ksamp([soln_samples, stud_samples]).pvalue
         return score
     
     def rejection_threshold(self, frr, num_stud_samples, num_soln_samples, monte_carlo_path=None):
@@ -135,7 +136,7 @@ class MeanScorer(Scorer):
     def compute_score(self, stud_samples, soln_samples):
         student_mean = np.mean(stud_samples)
         solution_mean = np.mean(soln_samples)
-        score = student_mean - solution_mean
+        score = abs(student_mean - solution_mean)
         if not np.isfinite(score):
             score = 1e7 
         return score
@@ -158,12 +159,20 @@ class MSDScorer(Scorer):
         return 'MSDScorer'
 
     def compute_score(self, stud_samples, soln_samples):
-        score = np.mean((stud_samples - soln_samples) ** 2)
+        score = (np.mean(stud_samples) - np.mean(soln_samples)) ** 2 + np.var(stud_samples)
         return score
     
     def rejection_threshold(self, frr, num_stud_samples, num_soln_samples, monte_carlo_path=None):
-        threshold = stats.norm.ppf(1 - frr / 2)
-        return threshold  
+        if not os.path.isfile(monte_carlo_path):
+            print('\nERROR: Must perform Monte Carlo sampling!\n')
+            raise Exception
+        with open(monte_carlo_path) as f:
+            scores = json.load(f)
+        scores = scores[str(num_stud_samples)]
+        scores.reverse()
+        index = int(len(scores) * frr)
+        threshold = scores[index]
+        return threshold 
     
 
 class WassersteinScorer(Scorer):
@@ -185,13 +194,16 @@ class WassersteinScorer(Scorer):
         return score
     
     def rejection_threshold(self, frr, num_stud_samples, num_soln_samples, monte_carlo_path=None):
+        if not os.path.isfile(monte_carlo_path):
+            print('\nERROR: Must perform Monte Carlo sampling!\n')
+            raise Exception
         with open(monte_carlo_path) as f:
             scores = json.load(f)
-        scores = sorted(scores)
+        scores = scores[str(num_stud_samples)]
         scores.reverse()
         index = int(len(scores) * frr)
         threshold = scores[index]
-        return threshold
+        return threshold 
 
 
 def make_scorer_map():

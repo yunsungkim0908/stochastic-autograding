@@ -45,7 +45,7 @@ def get_samples(
         prog = f.read()
         
     if append_samples and os.path.isfile(sample_path):
-        samples = list(np.load(sample_path))
+        samples = list(np.load(sample_path, allow_pickle=True))
     else:
         samples = []
     

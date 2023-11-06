@@ -32,21 +32,22 @@ class StochasticGrade():
         
         soln_sample_path = os.path.join(DATA_DIR, qid, 'solution/solution/samples.npy')
         if os.path.isfile(soln_sample_path):
-            self.soln_samples = np.load(soln_sample_path)
+            self.soln_samples = np.load(soln_sample_path, allow_pickle=True)
         else:
             self.sample_solution()
         
-    def sample_solution(self):
+    def sample_solution(self, case=None):
         """
         Sample the solution program.
         """
+        print('Sampling the solution program.')
+        sid = 'solution' if case is None else f'case_{case}/solution'
         get_student_info_single('solution', self.qid, self.num_soln_samples, self.dtype, append_samples=False)
-        
-        file_path = os.path.join(DATA_DIR, self.qid, 'solution', 'solution', 'samples.npy')
-        self.soln_samples = np.load(file_path)
+        file_path = os.path.join(DATA_DIR, self.qid, 'solution', sid, 'samples.npy')
+        self.soln_samples = np.load(file_path, allow_pickle=True)
         print(f'Generated {self.num_soln_samples} solution samples.')
         
-    def sample(self, n, sid):
+    def sample(self, n, sid, case=None):
         """
         Expand the collection of total student samples to n.
         """
@@ -54,17 +55,17 @@ class StochasticGrade():
         if not os.path.isfile(file_path):
             num_samples = n
         else:
-            self.stud_samples = np.load(file_path)
+            self.stud_samples = np.load(file_path, allow_pickle=True)
             num_samples = n - len(self.stud_samples)
             
         get_student_info_single(sid, self.qid, num_samples, self.dtype, append_samples=True)
-        self.stud_samples = np.load(file_path)
+        self.stud_samples = np.load(file_path, allow_pickle=True)
         
     def monte_carlo(self, num_samples, M=1000, overwrite=False):
         """
         Sample M solution program sample sets of size `num_samples`.
         """
-        monte_carlo_dir = os.path.join(DATA_DIR, qid, 'solution', 'mc_solutions')
+        monte_carlo_dir = os.path.join(DATA_DIR, self.qid, 'solution', 'mc_solutions')
         if overwrite and os.path.isdir(monte_carlo_dir):
             shutil.rmtree(monte_carlo_dir)
             
@@ -72,23 +73,32 @@ class StochasticGrade():
             os.makedirs(monte_carlo_dir)
         for i in tqdm(range(M)):
             sid = f'mc_solution_{i+1}'
-            if sid not in os.listdir(monte_carlo_dir):
+            if sid not in os.listdir(monte_carlo_dir) or overwrite:
                 get_student_info_single(sid, self.qid, num_samples, self.dtype, append_samples=True)                
         
-    def grade(self, sid):
+    def grade(self, sid, case=None):
         """
         Grade the given student program. 
         """
         self.stud_samples = []
+        start = time.time()
+        
         for i in range(len(self.sample_sizes)):
             sample_size = self.sample_sizes[i]
             self.sample(sample_size, sid)
+            if len(self.stud_samples) < sample_size:
+                return False, 1e7, sample_size, time.time() - start
             frr = self.frr / 2 ** (len(self.sample_sizes) - i)
-            score = self.scorer.compute_score(self.stud_samples, self.soln_samples)
-            epsilon = self.scorer.rejection_threshold(self.frr, len(self.stud_samples), len(self.soln_samples))
+            score = self.scorer.compute_score(self.stud_samples[:sample_size], self.soln_samples)
+            monte_carlo_path = os.path.join(DATA_DIR, self.qid, 'results', str(self.scorer), 'monte_carlo_scores.json')
+            epsilon = self.scorer.rejection_threshold(
+                self.frr, len(self.stud_samples[:sample_size]), len(self.soln_samples), monte_carlo_path=monte_carlo_path
+            )
             if score >= epsilon:
-                return False, score
-        return True, score
+                return False, score, sample_size, time.time() - start
+            
+        # Return the correctness, score, samples needed, and runtime
+        return True, score, sample_size, time.time() - start
     
 
 if __name__ == '__main__':
@@ -97,13 +107,15 @@ if __name__ == '__main__':
     parser.add_argument('--config-file') 
     parser.add_argument('--data-file')
     parser.add_argument('--mode', type=str, 
-                        choices=['single-grade', 'batch-grade', 'pre-score', 'cluster', 'monte-carlo', 'hand-label'], 
+                        choices=['single-grade', 'batch-grade', 'cluster', 'monte-carlo', 'hand-label'], 
                         default='batch-grade')
     parser.add_argument('--sid', type=str)
+    parser.add_argument('--case', type=str)
     args = parser.parse_args()
     
     # Load the command line arguments
     single_grade_sid = args.sid
+    case = args.case
     qid = args.qid
     mode = args.mode
     
@@ -148,7 +160,7 @@ if __name__ == '__main__':
         with open(args.data_file) as f:
             data = json.load(f)
         for sid in data:
-            sid_dir = os.path.join(DATA_DIR, qid, sid, 'students')
+            sid_dir = os.path.join(DATA_DIR, qid, 'students', sid)
             if not os.path.isdir(sid_dir):
                 os.mkdir(sid_dir)
                 with open(os.path.join(sid_dir, 'response.txt'), 'w') as f:
@@ -163,14 +175,29 @@ if __name__ == '__main__':
     # grades all programs within the 'students' directory. 
     if mode == 'single-grade' or mode == 'batch-grade':
         results_path = os.path.join(DATA_DIR, qid, 'results', scorer_name, str(frr))
-        if os.path.isdir(results_path):  
+        if not os.path.isdir(results_path):
+            os.makedirs(results_path)
+        
+        if os.path.isdir(os.path.join(results_path, 'labels.json')):  
             with open(os.path.join(results_path, 'labels.json')) as f:
                 labels = json.load(f)
+        else:
+            labels = {}
+        if os.path.isdir(os.path.join(results_path, 'scores.json')):
             with open(os.path.join(results_path, 'scores.json')) as f:
                 scores = json.load(f)
         else:
-            os.makedirs(results_path)
-            labels, scores = {}, {}
+            scores = {}
+        if os.path.isdir(os.path.join(results_path, 'samples_needed.json')):
+            with open(os.path.join(results_path, 'samples_needed.json')) as f:
+                samples_needed = json.load(f)
+        else:
+            samples_needed = {}
+        if os.path.isdir(os.path.join(results_path, 'runtimes.json')):
+            with open(os.path.join(results_path, 'runtimes.json')) as f:
+                runtimes = json.load(f)
+        else:
+            runtimes = {}
             
         algorithm = StochasticGrade(qid, scorer, sample_sizes, frr, dtype, num_soln_samples)
         if mode == 'single-grade':
@@ -178,20 +205,32 @@ if __name__ == '__main__':
         else:
             sids_to_grade = sids
         
-        for sid in sids_to_grade:
-            label, score = algorithm.grade(sid)
+        for i in tqdm(range(len(sids_to_grade))):
+            sid = sids_to_grade[i]
+            label, score, need, run = algorithm.grade(sid, case=case)
             labels[sid] = label
             scores[sid] = score
+            samples_needed[sid] = need
+            runtimes[sid] = run
             
+            if i % 5 == 0:
+                with open(os.path.join(results_path, 'labels.json'), 'w') as f:
+                    json.dump(labels, f)
+                with open(os.path.join(results_path, 'scores.json'), 'w') as f:
+                    json.dump(scores, f)
+                with open(os.path.join(results_path, 'samples_needed.json'), 'w') as f:
+                    json.dump(samples_needed, f)
+                with open(os.path.join(results_path, 'runtimes.json'), 'w') as f:
+                    json.dump(runtimes, f)
+                    
         with open(os.path.join(results_path, 'labels.json'), 'w') as f:
             json.dump(labels, f)
         with open(os.path.join(results_path, 'scores.json'), 'w') as f:
             json.dump(scores, f)
-            
-            
-    # pre-score: precalculate the scores prior to grading.
-    if mode == 'pre-score':
-        pass 
+        with open(os.path.join(results_path, 'samples_needed.json'), 'w') as f:
+            json.dump(samples_needed, f)
+        with open(os.path.join(results_path, 'runtimes.json'), 'w') as f:
+            json.dump(runtimes, f)
     
     
     # cluster: cluster programs based on their scores. 
@@ -230,8 +269,9 @@ if __name__ == '__main__':
         # Precompute scores
         monte_carlo_dir = os.path.join(DATA_DIR, qid, 'solution', 'mc_solutions')
         scores = {}
-        for sid in os.listdir(monte_carlo_dir):
-            samples = np.load(os.path.join(monte_carlo_dir, sid, 'samples.npy'))
+        print('Computing scores...')
+        for sid in tqdm(os.listdir(monte_carlo_dir)):
+            samples = np.load(os.path.join(monte_carlo_dir, sid, 'samples.npy'), allow_pickle=True)
             for sample_size in sample_sizes:
                 if sample_size not in scores:
                     scores[sample_size] = []
@@ -239,8 +279,17 @@ if __name__ == '__main__':
                     samples[:sample_size], algorithm.soln_samples[:mc_num_anchor_samples]
                 )
                 scores[sample_size].append(score)
+            if mc_num_samples not in scores:
+                scores[mc_num_samples] = []
+            score = algorithm.scorer.compute_score(
+                samples[:mc_num_samples], algorithm.soln_samples[:mc_num_anchor_samples]
+            )
+            scores[mc_num_samples].append(score)
                 
-        scores_path = os.path.join(DATA_DIR, qid, 'results', scorer_name, 'monte_carlo_scores.json')
+        results_path = os.path.join(DATA_DIR, qid, 'results', scorer_name)
+        scores_path = os.path.join(results_path, 'monte_carlo_scores.json')
+        if not os.path.isdir(results_path):
+            os.makedirs(results_path)
         with open(scores_path, 'w') as f:
             json.dump(scores, f)
                 
